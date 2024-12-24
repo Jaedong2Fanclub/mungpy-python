@@ -9,6 +9,8 @@ from starlette.middleware.cors import CORSMiddleware
 from starlette.responses import HTMLResponse, JSONResponse, PlainTextResponse
 from starlette.staticfiles import StaticFiles
 import os
+import ssl
+import aiohttp
 
 # 모델 파일 경로
 model_file_path = './app/models/DogCatClassifier.pkl'
@@ -64,34 +66,60 @@ async def homepage(request):
 
 @app.route('/breeds', methods=['POST'])
 async def analyze(request):
+    query_params = request.query_params
+    source_type = query_params.get('source', 'file')  # 기본값은 파일
+
+    if source_type == 'url':
+        # URL로부터 이미지 가져오기
+        try:
+            img_url = await request.form()
+            img_url = img_url.get('url', None)  # 폼 데이터에서 'url' 값을 가져옵니다.
+            if not img_url:
+                return JSONResponse({'error': 'URL parameter is required for source=url'}, status_code=400)
+
+            # SSL 인증서 검증 비활성화 상태       
+            async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=False)) as session:
+                async with session.get(img_url) as response:
+                    if response.status != 200:
+                        return JSONResponse({'error': 'Failed to fetch image from URL'}, status_code=400)
+
+                    img_bytes = await response.read()
+        except Exception as e:
+            return JSONResponse({'error': f'Error fetching image from URL: {str(e)}'}, status_code=500)
+
+    elif source_type == 'file':
+        # 폼 데이터로부터 이미지 파일 읽기
+        try:
+            img_data = await request.form()
+            img_bytes = await (img_data['file'].read())
+        except Exception as e:
+            return JSONResponse({'error': f'Error reading image file: {str(e)}'}, status_code=400)
+
+    else:
+        return JSONResponse({'error': 'Invalid source type. Use "file" or "url".'}, status_code=400)
+
     try:
-        img_data = await request.form()
-        img_bytes = await (img_data['file'].read())
         img = open_image(BytesIO(img_bytes))
         prediction, _, probs = learn.predict(img)
-        
+
         # 쿼리 파라미터 확인 (type)
-        query_params = request.query_params
         filter_type = query_params.get('type', None)  # None이면 모든 품종 반환
-        
+
         # 필터링 로직
         if filter_type == 'dog':
-            # 강아지 품종 중 가장 높은 확률을 가진 품종 반환
             dog_probs = {dog: probs[classes.index(dog)].item() for dog in dog_classes}
             best_dog = max(dog_probs, key=dog_probs.get)
             return JSONResponse({'result': best_dog})
         elif filter_type == 'cat':
-            # 고양이 품종 중 가장 높은 확률을 가진 품종 반환
             cat_probs = {cat: probs[classes.index(cat)].item() for cat in cat_classes}
             best_cat = max(cat_probs, key=cat_probs.get)
             return JSONResponse({'result': best_cat})
-        
-        # 기본 동작: 모든 품종 중 가장 높은 확률의 품종 반환
+
         return JSONResponse({'result': str(prediction)})
-    except KeyError:
-        return JSONResponse({'error': 'File not provided or invalid form data.'}, status_code=400)
+
     except Exception as e:
-        return JSONResponse({'error': str(e)}, status_code=500)
+        return JSONResponse({'error': f'Error processing image: {str(e)}'}, status_code=500)
+
 
 @app.route('/health', methods=['GET'])
 async def health_check(request):
