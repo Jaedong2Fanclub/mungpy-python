@@ -6,7 +6,7 @@ from fastai.vision import *
 from io import BytesIO
 from starlette.applications import Starlette
 from starlette.middleware.cors import CORSMiddleware
-from starlette.responses import HTMLResponse, JSONResponse
+from starlette.responses import HTMLResponse, JSONResponse, PlainTextResponse
 from starlette.staticfiles import StaticFiles
 import os
 
@@ -49,43 +49,49 @@ async def setup_learner():
         else:
             raise
 
-
 loop = asyncio.get_event_loop()
 tasks = [asyncio.ensure_future(setup_learner())]
 learn = loop.run_until_complete(asyncio.gather(*tasks))[0]
 loop.close()
 
-
 @app.route('/test-page')
 async def homepage(request):
-    html_file = path / 'view' / 'index.html'
-    return HTMLResponse(html_file.open().read())
+    try:
+        html_file = path / 'view' / 'index.html'
+        return HTMLResponse(html_file.open().read())
+    except FileNotFoundError:
+        return PlainTextResponse("Test page not found.", status_code=404)
 
 @app.route('/breeds', methods=['POST'])
 async def analyze(request):
-    img_data = await request.form()
-    img_bytes = await (img_data['file'].read())
-    img = open_image(BytesIO(img_bytes))
-    prediction, _, probs = learn.predict(img)
-    
-    # 쿼리 파라미터 확인 (type)
-    query_params = request.query_params
-    filter_type = query_params.get('type', None)  # None이면 모든 품종 반환
-    
-    # 필터링 로직
-    if filter_type == 'dog':
-        # 강아지 품종 중 가장 높은 확률을 가진 품종 반환
-        dog_probs = {dog: probs[classes.index(dog)].item() for dog in dog_classes}
-        best_dog = max(dog_probs, key=dog_probs.get)
-        return JSONResponse({'result': best_dog})
-    elif filter_type == 'cat':
-        # 고양이 품종 중 가장 높은 확률을 가진 품종 반환
-        cat_probs = {cat: probs[classes.index(cat)].item() for cat in cat_classes}
-        best_cat = max(cat_probs, key=cat_probs.get)
-        return JSONResponse({'result': best_cat})
-    
-    # 기본 동작: 모든 품종 중 가장 높은 확률의 품종 반환
-    return JSONResponse({'result': str(prediction)})
+    try:
+        img_data = await request.form()
+        img_bytes = await (img_data['file'].read())
+        img = open_image(BytesIO(img_bytes))
+        prediction, _, probs = learn.predict(img)
+        
+        # 쿼리 파라미터 확인 (type)
+        query_params = request.query_params
+        filter_type = query_params.get('type', None)  # None이면 모든 품종 반환
+        
+        # 필터링 로직
+        if filter_type == 'dog':
+            # 강아지 품종 중 가장 높은 확률을 가진 품종 반환
+            dog_probs = {dog: probs[classes.index(dog)].item() for dog in dog_classes}
+            best_dog = max(dog_probs, key=dog_probs.get)
+            return JSONResponse({'result': best_dog})
+        elif filter_type == 'cat':
+            # 고양이 품종 중 가장 높은 확률을 가진 품종 반환
+            cat_probs = {cat: probs[classes.index(cat)].item() for cat in cat_classes}
+            best_cat = max(cat_probs, key=cat_probs.get)
+            return JSONResponse({'result': best_cat})
+        
+        # 기본 동작: 모든 품종 중 가장 높은 확률의 품종 반환
+        return JSONResponse({'result': str(prediction)})
+    except KeyError:
+        return JSONResponse({'error': 'File not provided or invalid form data.'}, status_code=400)
+    except Exception as e:
+        return JSONResponse({'error': str(e)}, status_code=500)
 
 @app.route('/health', methods=['GET'])
 async def health_check(request):
